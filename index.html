@@ -439,9 +439,9 @@ input[type=range]::-webkit-slider-thumb {
 
   <!-- ====== RECORDINGS ====== -->
   <div id="rec-screen" class="screen">
-    <div class="sec-t" style="margin-bottom:10px">録音ログ <span style="color:var(--text3);font-family:var(--font-d);font-size:8px">30秒 / 1時間ごと</span></div>
+    <div class="sec-t" style="margin-bottom:10px">録音ログ <span style="color:var(--text3);font-family:var(--font-d);font-size:8px">1分 / 大いびき検知時</span></div>
     <div id="rec-list">
-      <div id="no-recs">🎙<br>録音はまだありません<br>いびきを検知すると<br>自動で30秒録音されます</div>
+      <div id="no-recs">🎙<br>録音はまだありません<br>大きないびきを検知すると<br>自動で1分間録音されます</div>
     </div>
   </div>
 
@@ -508,12 +508,43 @@ input[type=range]::-webkit-slider-thumb {
     </div>
 
     <div class="set-sec">
+      <div class="set-sec-t">🎙 録音設定</div>
+      <div class="set-item">
+        <label>録音トリガー（どの強度から録音するか）</label>
+        <div style="display:flex;gap:8px;margin-top:4px" id="rec-trigger-btns">
+          <button class="trig-btn" data-v="1" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.08);color:var(--snore-s);font-size:12px;font-weight:700;cursor:pointer">小以上</button>
+          <button class="trig-btn" data-v="2" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(245,158,11,.3);background:rgba(245,158,11,.08);color:var(--snore-m);font-size:12px;font-weight:700;cursor:pointer">中以上</button>
+          <button class="trig-btn active-trig" data-v="3" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(239,68,68,.6);background:rgba(239,68,68,.18);color:var(--snore-l);font-size:12px;font-weight:700;cursor:pointer">大のみ ✓</button>
+        </div>
+        <div class="hint">「大のみ」推奨。誤検知を減らし本当に大きないびきだけ録音します</div>
+      </div>
+      <div class="set-item">
+        <label>録音時間</label>
+        <div class="rng-row">
+          <input type="range" id="sl-recdur" min="30" max="180" step="30" value="60">
+          <div class="rng-v" id="v-recdur">60秒</div>
+        </div>
+        <div class="hint">30秒 / 60秒 / 90秒 / 120秒 / 150秒 / 180秒から選択</div>
+      </div>
+      <div class="set-item">
+        <label>録音音量の増幅</label>
+        <div class="rng-row">
+          <span style="font-size:9px;color:var(--text2)">小</span>
+          <input type="range" id="sl-gain" min="1" max="5" step="0.5" value="2.5">
+          <span style="font-size:9px;color:var(--text2)">大</span>
+          <div class="rng-v" id="v-gain">2.5x</div>
+        </div>
+        <div class="hint">録音した音が小さい場合は上げてください。推奨は2〜3x</div>
+      </div>
+    </div>
+
+    <div class="set-sec">
       <div class="set-sec-t">🗑 データ管理</div>
       <button class="abtn abtn-d" id="btn-clr">すべてのデータを削除</button>
     </div>
 
     <div style="text-align:center;padding:20px 0 8px;font-size:10px;color:var(--text3);line-height:1.8">
-      いびきモニター Pro v2.0<br>
+      いびきモニター Pro v2.1<br>
       <span style="color:var(--text2)">データはこのデバイスのみに保存されます</span>
     </div>
   </div>
@@ -641,6 +672,12 @@ const S={
   freqMode:2,   // 1=wide(80-800) 2=normal(80-500) 3=narrow(80-300)
   noiseFilter:2,
   bgNoise:16,
+  recTriggerLevel:3,  // 1=小以上 2=中以上 3=大のみ
+  recDurSec:60,       // 録音時間（秒）
+  recGain:2.5,        // 録音音量倍率
+
+  // audio nodes
+  gainNode:null,
 
   // wake lock
   wakeLock:null,
@@ -817,6 +854,11 @@ function onSnoreEnd(){
 // =====================================================
 function checkHourlyRecording(){
   if(!S.stream) return;
+  // 強度チェック：設定されたレベル以上のみ録音
+  const curInten=S.intensityBuf.length
+    ? Math.round(S.intensityBuf.reduce((a,b)=>a+b,0)/S.intensityBuf.length)
+    : 1;
+  if(curInten < S.recTriggerLevel) return;
   const n=new Date();
   const key=`${n.getFullYear()}-${n.getMonth()}-${n.getDate()}-${n.getHours()}`;
   if(S.hourRecs[key]) return;
@@ -829,14 +871,16 @@ function startRecording(key){
   if(S.recorder && S.recorder.state!=='inactive'){return;}
   try{
     S.recChunks=[];
+    // 増幅済みストリームを使用（recDestがあれば）
+    const recStream=S.recDest ? S.recDest.stream : S.stream;
     const mime=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg']
       .find(m=>MediaRecorder.isTypeSupported(m)) || '';
     const opts=mime ? {mimeType:mime} : {};
-    S.recorder=new MediaRecorder(S.stream, opts);
+    S.recorder=new MediaRecorder(recStream, opts);
     S.recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)S.recChunks.push(e.data);};
     S.recorder.onerror=e=>{
       console.warn('recorder error',e);
-      delete S.hourRecs[key]; // allow retry
+      delete S.hourRecs[key];
     };
     S.recorder.onstop=async()=>{
       if(!S.recChunks.length){delete S.hourRecs[key];return;}
@@ -849,11 +893,11 @@ function startRecording(key){
           ts:now.getTime(),
           timeStr:now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}),
           dateStr:now.toLocaleDateString('ja-JP',{year:'numeric',month:'short',day:'numeric',weekday:'short'}),
-          intensity:inten, dur:Math.round(S.recorder._elapsed||30),
+          intensity:inten, dur:Math.round(S.recorder._elapsed||S.recDurSec),
           blob, mime:S.recorder.mimeType||'audio/webm'
         });
         await loadRecordings();
-        toast('🎙 30秒録音を保存しました');
+        toast(`🎙 ${S.recDurSec}秒録音を保存しました`);
       }catch(e2){console.warn('db save err',e2);}
     };
     S.recorder._startTime=Date.now();
@@ -862,8 +906,8 @@ function startRecording(key){
       S.recorder._elapsed=Math.round((Date.now()-S.recorder._startTime)/1000);
       if(S.recorder.state==='recording')S.recorder.stop();
     };
-    setTimeout(stopAt, 30000);
-    toast('🔴 録音開始（30秒）');
+    setTimeout(stopAt, S.recDurSec*1000);
+    toast(`🔴 録音開始（${S.recDurSec}秒）`);
   }catch(e){console.warn('rec err',e); delete S.hourRecs[key];}
 }
 
@@ -1000,8 +1044,13 @@ async function startMonitoring(){
   S.analyser=S.audioCtx.createAnalyser();
   S.analyser.fftSize=2048;
   S.analyser.smoothingTimeConstant=0.75;
+  S.gainNode=S.audioCtx.createGain();
+  S.gainNode.gain.value=S.recGain;
+  S.recDest=S.audioCtx.createMediaStreamDestination();
+  S.gainNode.connect(S.recDest);
   const src=S.audioCtx.createMediaStreamSource(S.stream);
   src.connect(S.analyser);
+  src.connect(S.gainNode);
   S.freqBuf=new Uint8Array(S.analyser.frequencyBinCount);
   S.timeBuf=new Uint8Array(S.analyser.fftSize);
 
@@ -1054,7 +1103,8 @@ function saveSession(){
     localStorage.setItem('ibiki_sess',JSON.stringify({
       sessionStart:S.sessionStart, events:S.events, minuteMap:S.minuteMap,
       bgNoise:S.bgNoise, sensitivity:S.sensitivity, minDurSec:S.minDurSec,
-      freqMode:S.freqMode, noiseFilter:S.noiseFilter
+      freqMode:S.freqMode, noiseFilter:S.noiseFilter,
+      recTriggerLevel:S.recTriggerLevel, recDurSec:S.recDurSec, recGain:S.recGain
     }));
   }catch(e){}
 }
@@ -1085,6 +1135,9 @@ function restoreSession(){
     if(d.minDurSec!=null){S.minDurSec=d.minDurSec;document.getElementById('sl-dur').value=S.minDurSec;document.getElementById('v-dur').textContent=S.minDurSec+'秒';}
     if(d.freqMode!=null){S.freqMode=d.freqMode;document.getElementById('sl-freq').value=S.freqMode;updateFreqLabel();}
     if(d.noiseFilter!=null){S.noiseFilter=d.noiseFilter;document.getElementById('sl-noise').value=S.noiseFilter;document.getElementById('v-noise').textContent=S.noiseFilter;}
+    if(d.recTriggerLevel!=null){S.recTriggerLevel=d.recTriggerLevel;updateTriggerBtns();}
+    if(d.recDurSec!=null){S.recDurSec=d.recDurSec;document.getElementById('sl-recdur').value=S.recDurSec;document.getElementById('v-recdur').textContent=S.recDurSec+'秒';}
+    if(d.recGain!=null){S.recGain=d.recGain;document.getElementById('sl-gain').value=S.recGain;document.getElementById('v-gain').textContent=S.recGain+'x';}
     const today=new Date().toDateString();
     if(d.sessionStart&&new Date(d.sessionStart).toDateString()===today){
       S.sessionStart=d.sessionStart; S.events=d.events||[]; S.minuteMap=d.minuteMap||{};
@@ -1093,6 +1146,16 @@ function restoreSession(){
     }
     updateThreshDisplay();
   }catch(e){}
+}
+
+function updateTriggerBtns(){
+  document.querySelectorAll('.trig-btn').forEach(b=>{
+    const v=parseInt(b.dataset.v);
+    const isActive=v===S.recTriggerLevel;
+    b.textContent=isActive ? ['','小以上 ✓','中以上 ✓','大のみ ✓'][v] : ['','小以上','中以上','大のみ'][v];
+    b.style.opacity=isActive?'1':'0.5';
+    b.style.fontWeight=isActive?'700':'400';
+  });
 }
 
 // =====================================================
@@ -1448,6 +1511,24 @@ document.getElementById('sl-freq').addEventListener('input',function(){
 document.getElementById('sl-noise').addEventListener('input',function(){
   S.noiseFilter=parseInt(this.value);
   document.getElementById('v-noise').textContent=this.value; saveSession();
+});
+document.getElementById('sl-recdur').addEventListener('input',function(){
+  S.recDurSec=parseInt(this.value);
+  document.getElementById('v-recdur').textContent=this.value+'秒'; saveSession();
+});
+document.getElementById('sl-gain').addEventListener('input',function(){
+  S.recGain=parseFloat(this.value);
+  document.getElementById('v-gain').textContent=S.recGain+'x';
+  if(S.gainNode) S.gainNode.gain.value=S.recGain;
+  saveSession();
+});
+document.querySelectorAll('.trig-btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    S.recTriggerLevel=parseInt(b.dataset.v);
+    updateTriggerBtns(); saveSession();
+    const names=['','小以上','中以上','大のみ'];
+    toast(`録音トリガー: ${names[S.recTriggerLevel]}`);
+  });
 });
 document.getElementById('btn-cal').addEventListener('click',calibrate);
 document.getElementById('btn-clr').addEventListener('click',async()=>{
