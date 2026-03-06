@@ -80,9 +80,10 @@ body::before {
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
 
 /* ===== SCREENS ===== */
-#screens { flex:1; overflow:hidden; position:relative; }
+#screens { flex:1; overflow:hidden; position:relative; min-height:0; }
 .screen {
-  position:absolute; inset:0; overflow-y:auto; overflow-x:hidden;
+  position:absolute; top:0; left:0; right:0; bottom:0;
+  overflow-y:auto; overflow-x:hidden;
   padding:12px 14px 10px;
   display:none;
   scrollbar-width:thin; scrollbar-color:var(--border) transparent;
@@ -491,6 +492,9 @@ input[type=range]::-webkit-slider-thumb {
         <button class="abtn abtn-n" id="btn-test-rec">今すぐ10秒テスト録音</button>
         <div class="hint" style="margin-top:8px">モニタリング中に押すと強制的に10秒録音します。録音タブで確認できます。</div>
       </div>
+
+      <div class="set-item">
+        <label>🎯 環境キャリブレーション</label>
         <button class="abtn abtn-p" id="btn-cal">5秒間キャリブレーション</button>
         <div id="cal-result">就寝前、静かな状態で実行してください</div>
       </div>
@@ -589,7 +593,7 @@ input[type=range]::-webkit-slider-thumb {
   const b=new Blob([JSON.stringify(m)],{type:'application/json'});
   document.getElementById('manifestLink').href=URL.createObjectURL(b);
   if('serviceWorker' in navigator){
-    const sw=`self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(clients.claim()));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Response('',{status:503}))));`;
+    const sw=`const V='ibiki-v2-1';self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>clients.claim())));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>new Response('',{status:503}))));`;
     navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw],{type:'application/javascript'}))).catch(()=>{});
   }
 })();
