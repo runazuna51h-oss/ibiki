@@ -487,7 +487,10 @@ input[type=range]::-webkit-slider-thumb {
       </div>
 
       <div class="set-item">
-        <label>🎯 環境キャリブレーション</label>
+        <label>🧪 テスト録音（動作確認用）</label>
+        <button class="abtn abtn-n" id="btn-test-rec">今すぐ10秒テスト録音</button>
+        <div class="hint" style="margin-top:8px">モニタリング中に押すと強制的に10秒録音します。録音タブで確認できます。</div>
+      </div>
         <button class="abtn abtn-p" id="btn-cal">5秒間キャリブレーション</button>
         <div id="cal-result">就寝前、静かな状態で実行してください</div>
       </div>
@@ -513,8 +516,8 @@ input[type=range]::-webkit-slider-thumb {
         <label>録音トリガー（どの強度から録音するか）</label>
         <div style="display:flex;gap:8px;margin-top:4px" id="rec-trigger-btns">
           <button class="trig-btn" data-v="1" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.08);color:var(--snore-s);font-size:12px;font-weight:700;cursor:pointer">小以上</button>
-          <button class="trig-btn" data-v="2" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(245,158,11,.3);background:rgba(245,158,11,.08);color:var(--snore-m);font-size:12px;font-weight:700;cursor:pointer">中以上</button>
-          <button class="trig-btn active-trig" data-v="3" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(239,68,68,.6);background:rgba(239,68,68,.18);color:var(--snore-l);font-size:12px;font-weight:700;cursor:pointer">大のみ ✓</button>
+          <button class="trig-btn active-trig" data-v="2" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(245,158,11,.6);background:rgba(245,158,11,.18);color:var(--snore-m);font-size:12px;font-weight:700;cursor:pointer">中以上 ✓</button>
+          <button class="trig-btn" data-v="3" style="flex:1;padding:8px 4px;border-radius:10px;border:1px solid rgba(239,68,68,.3);background:rgba(239,68,68,.08);color:var(--snore-l);font-size:12px;font-weight:700;cursor:pointer">大のみ</button>
         </div>
         <div class="hint">「大のみ」推奨。誤検知を減らし本当に大きないびきだけ録音します</div>
       </div>
@@ -597,7 +600,7 @@ input[type=range]::-webkit-slider-thumb {
 let db=null;
 async function openDB(){
   return new Promise((res,rej)=>{
-    const r=indexedDB.open('IbikiMonitorPro',2);
+    const r=indexedDB.open('IbikiMonitorPro',3);
     r.onupgradeneeded=e=>{
       const d=e.target.result;
       if(!d.objectStoreNames.contains('recs')){
@@ -672,7 +675,7 @@ const S={
   freqMode:2,   // 1=wide(80-800) 2=normal(80-500) 3=narrow(80-300)
   noiseFilter:2,
   bgNoise:16,
-  recTriggerLevel:3,  // 1=小以上 2=中以上 3=大のみ
+  recTriggerLevel:2,  // 1=小以上 2=中以上 3=大のみ（デフォルト：中以上）
   recDurSec:60,       // 録音時間（秒）
   recGain:2.5,        // 録音音量倍率
 
@@ -804,8 +807,8 @@ function startTicker(){
     if(inten>0){
       S.warmupFrames++; S.cooldownFrames=0;
       if(!S.snoring && S.warmupFrames>=minFrames()){
-        S.snoring=true; S.snoreStart=Date.now(); S.intensityBuf=[];
-        onSnoreStart();
+        S.snoring=true; S.snoreStart=Date.now(); S.intensityBuf=[inten]; // ★ 開始時点のintenを先に入れる
+        onSnoreStart(inten); // ★ intenを渡す
       }
       if(S.snoring) S.intensityBuf.push(inten);
     } else {
@@ -830,8 +833,8 @@ function stopTicker(){
   if(S.snoring){S.snoring=false; onSnoreEnd();}
 }
 
-function onSnoreStart(){
-  checkHourlyRecording();
+function onSnoreStart(inten){
+  checkHourlyRecording(inten);
   document.getElementById('snore-ring').classList.add('on');
 }
 
@@ -852,12 +855,12 @@ function onSnoreEnd(){
 // =====================================================
 //  RECORDING  — stable with retry + visual
 // =====================================================
-function checkHourlyRecording(){
+function checkHourlyRecording(inten){
   if(!S.stream) return;
-  // 強度チェック：設定されたレベル以上のみ録音
-  const curInten=S.intensityBuf.length
+  // 検知開始時点の強度で判定（bufはまだ少ないため直接intenを使う）
+  const curInten = inten || (S.intensityBuf.length
     ? Math.round(S.intensityBuf.reduce((a,b)=>a+b,0)/S.intensityBuf.length)
-    : 1;
+    : 1);
   if(curInten < S.recTriggerLevel) return;
   const n=new Date();
   const key=`${n.getFullYear()}-${n.getMonth()}-${n.getDate()}-${n.getHours()}`;
@@ -871,20 +874,45 @@ function startRecording(key){
   if(S.recorder && S.recorder.state!=='inactive'){return;}
   try{
     S.recChunks=[];
-    // 増幅済みストリームを使用（recDestがあれば）
-    const recStream=S.recDest ? S.recDest.stream : S.stream;
-    const mime=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg']
-      .find(m=>MediaRecorder.isTypeSupported(m)) || '';
+    // Android Chromeでは MediaStreamDestination が不安定なため S.stream を優先使用
+    // recDest が有効な場合のみ増幅ストリームを試みる
+    let recStream=S.stream;
+    try{
+      if(S.recDest && S.recDest.stream && S.recDest.stream.active){
+        recStream=S.recDest.stream;
+      }
+    }catch(e2){ recStream=S.stream; }
+
+    const mime=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg','']
+      .find(m=>!m || MediaRecorder.isTypeSupported(m));
     const opts=mime ? {mimeType:mime} : {};
     S.recorder=new MediaRecorder(recStream, opts);
-    S.recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)S.recChunks.push(e.data);};
+
+    // ★ localChunks を使ってS.recChunksの競合を防ぐ
+    const localChunks=[];
+    S.recorder.ondataavailable=e=>{
+      if(e.data && e.data.size>0){
+        localChunks.push(e.data);
+        S.recChunks.push(e.data); // 互換性のため両方に追加
+      }
+    };
     S.recorder.onerror=e=>{
       console.warn('recorder error',e);
+      toast('❌ 録音エラーが発生しました');
       delete S.hourRecs[key];
     };
     S.recorder.onstop=async()=>{
-      if(!S.recChunks.length){delete S.hourRecs[key];return;}
-      const blob=new Blob(S.recChunks,{type:S.recorder.mimeType||'audio/webm'});
+      // ★ 少し待ってからチェック（最後のdataavailableが届くのを待つ）
+      await new Promise(r=>setTimeout(r,300));
+      if(!localChunks.length){
+        toast('❌ 録音データが空です。マイク確認を');
+        delete S.hourRecs[key]; return;
+      }
+      const blob=new Blob(localChunks,{type:S.recorder.mimeType||'audio/webm'});
+      if(blob.size < 100){
+        toast('❌ 録音ファイルが小さすぎます');
+        delete S.hourRecs[key]; return;
+      }
       const now=new Date();
       const buf=S.intensityBuf.length ? S.intensityBuf : [1];
       const inten=Math.round(buf.reduce((a,b)=>a+b,0)/buf.length);
@@ -897,8 +925,11 @@ function startRecording(key){
           blob, mime:S.recorder.mimeType||'audio/webm'
         });
         await loadRecordings();
-        toast(`🎙 ${S.recDurSec}秒録音を保存しました`);
-      }catch(e2){console.warn('db save err',e2);}
+        toast(`✅ ${Math.round(S.recorder._elapsed||S.recDurSec)}秒録音を保存しました`);
+      }catch(e2){
+        console.warn('db save err',e2);
+        toast('❌ 保存失敗: '+e2.message);
+      }
     };
     S.recorder._startTime=Date.now();
     S.recorder.start(500);
@@ -1531,6 +1562,39 @@ document.querySelectorAll('.trig-btn').forEach(b=>{
   });
 });
 document.getElementById('btn-cal').addEventListener('click',calibrate);
+document.getElementById('btn-test-rec').addEventListener('click',()=>{
+  if(!S.active){toast('❌ モニタリングを開始してから押してください');return;}
+  if(S.recorder&&S.recorder.state==='recording'){toast('⏺ 録音中です…');return;}
+  // テスト用：hourRecsキーを使わず強制録音
+  const key='test-'+Date.now();
+  S.hourRecs[key]=false; // 事前にtrueにしない
+  toast('🔴 テスト録音開始（10秒）');
+  S.recChunks=[];
+  const recStream=S.stream;
+  const mime=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/ogg','']
+    .find(m=>!m||MediaRecorder.isTypeSupported(m));
+  try{
+    const opts=mime?{mimeType:mime}:{};
+    const rec=new MediaRecorder(recStream,opts);
+    const chunks=[];
+    rec.ondataavailable=e=>{if(e.data&&e.data.size>0)chunks.push(e.data);};
+    rec.onstop=async()=>{
+      if(!chunks.length){toast('❌ 録音データなし。マイク確認を');return;}
+      const blob=new Blob(chunks,{type:rec.mimeType||'audio/webm'});
+      const now=new Date();
+      await DB.addRec({
+        ts:now.getTime(),
+        timeStr:now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'}),
+        dateStr:now.toLocaleDateString('ja-JP',{year:'numeric',month:'short',day:'numeric',weekday:'short'}),
+        intensity:1, dur:10, blob, mime:rec.mimeType||'audio/webm'
+      });
+      await loadRecordings();
+      toast('✅ テスト録音を保存しました。録音タブで確認できます');
+    };
+    rec.start(500);
+    setTimeout(()=>{if(rec.state==='recording')rec.stop();},10000);
+  }catch(e){toast('❌ 録音エラー: '+e.message);}
+});
 document.getElementById('btn-clr').addEventListener('click',async()=>{
   if(confirm('すべての録音・セッション履歴を削除しますか？\nこの操作は元に戻せません。')){
     await DB.clearAll(); localStorage.removeItem('ibiki_sess');
